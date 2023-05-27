@@ -1,8 +1,12 @@
+use anyhow::Result;
 use iced::executor;
 use iced::widget::{button, column, text, text_input};
 use iced::{Alignment, Application, Command, Element, Settings, Theme};
 use once_cell::sync::Lazy;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 
 static INPUT_ID: Lazy<text_input::Id> = Lazy::new(text_input::Id::unique);
 
@@ -21,12 +25,34 @@ struct Commaoe {
     content: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct History {
+    time: String,
+    delay: i32,
+    #[serde(rename = "meanDelay")]
+    mean_delay: i32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct Proxy {
+    history: Vec<History>,
+    name: String,
+    #[serde(rename = "type")]
+    proxy_type: String,
+    udp: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct Proxies {
+    proxies: HashMap<String, Proxy>,
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     IPChanged(String),
     PortChanged(String),
     FetchData,
-    DataFetched(String),
+    AllProxies(Option<Proxies>),
 }
 
 impl Default for Commaoe {
@@ -67,23 +93,17 @@ impl Application for Commaoe {
             }
             Message::FetchData => {
                 let client = self.client.clone();
-                let url = format!("{}:{}", self.ip, self.port);
+                let ip = self.ip.clone();
+                let port = self.port.clone();
                 Command::perform(
-                    async move {
-                        let response = client.get(url).send().await;
-                        match response {
-                            Ok(resp) => match resp.text().await {
-                                Ok(json) => json,
-                                Err(e) => e.to_string(),
-                            },
-                            Err(e) => e.to_string(),
-                        }
-                    },
-                    Message::DataFetched,
+                    async move { all_proxy(client, ip, port).await },
+                    Message::AllProxies,
                 )
             }
-            Message::DataFetched(data) => {
-                self.content = data;
+            Message::AllProxies(data) => {
+                if let Some(strs) = data {
+                    self.content = format!("{:?}", strs)
+                }
                 Command::none()
             }
         }
@@ -107,3 +127,24 @@ impl Application for Commaoe {
         .into()
     }
 }
+
+async fn fetch_data(client: Client, ip: String, port: String, path: String) -> Result<Value> {
+    let url = format!("{}:{}/{}", &ip, &port, &path);
+    let resp = client.get(url).send().await?;
+    let result: Value = resp.json().await?;
+    Ok(result)
+}
+
+async fn all_proxy(client: Client, ip: String, port: String) -> Option<Proxies> {
+    let path = String::from("proxies");
+    let json = fetch_data(client.clone(), ip.to_owned(), port.to_owned(), path).await;
+    if let Ok(json) = json {
+        if let Ok(parsed_data) = serde_json::from_value::<Proxies>(json) {
+            Some(parsed_data)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+  }
